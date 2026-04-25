@@ -27,6 +27,7 @@ TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 PORT = int(os.environ.get("PORT", "10000"))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "")
 CONFIG_FILE = "bot_config.json"
 
 logging.basicConfig(
@@ -62,125 +63,133 @@ def save_config(cfg):
 config = load_config()
 
 # ============================================================
-# BUSCA DE VOOS REAIS VIA ANTHROPIC API + FIRECRAWL MCP
+# BUSCA REAL VIA FIRECRAWL API
 # ============================================================
 
-def search_real_flights():
-    """Busca passagens REAIS usando a API da Anthropic com Firecrawl MCP"""
-    logger.info("Buscando passagens REAIS via Claude + Firecrawl...")
+def search_firecrawl():
+    """Busca passagens REAIS usando Firecrawl API"""
+    if not FIRECRAWL_API_KEY:
+        logger.warning("FIRECRAWL_API_KEY nao configurada")
+        return None
 
     try:
-        api_url = "https://api.anthropic.com/v1/messages"
+        ida = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        volta = (datetime.now() + timedelta(days=12)).strftime("%Y-%m-%d")
+
+        url = f"https://www.kayak.com.br/flights/FOR-REC/{ida}/{volta}?sort=price_a"
+        logger.info(f"Firecrawl buscando: {url}")
+
+        api_url = "https://api.firecrawl.dev/v1/scrape"
         headers = {
+            "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
             "Content-Type": "application/json",
-            "anthropic-version": "2025-01-01",
         }
-
-        # Datas de busca
-        ida = (datetime.now() + timedelta(days=7)).strftime("%d/%m/%Y")
-        volta = (datetime.now() + timedelta(days=12)).strftime("%d/%m/%Y")
-
         payload = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1000,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Busque passagens aereas de Fortaleza (FOR) para Recife (REC), "
-                        f"ida e volta, em classe economica, 1 adulto. "
-                        f"Datas aproximadas: ida {ida}, volta {volta}. "
-                        f"Responda SOMENTE em JSON puro (sem markdown, sem ```), "
-                        f"com este formato exato: "
-                        f'{{"flights":[{{"airline":"nome","price":123,"departure":"horario","arrival":"horario","date":"data","stops":0,"duration":"Xh"}}]}}'
-                    ),
-                }
-            ],
-            "mcp_servers": [
-                {
-                    "type": "url",
-                    "url": "https://mcp.firecrawl.dev/fc-6c8e0be264054987865bc8d09e5921b2/v2/mcp",
-                    "name": "firecrawl",
-                }
-            ],
-            "tools": [
-                {"type": "web_search_20250305", "name": "web_search"}
-            ],
+            "url": url,
+            "formats": ["json"],
+            "jsonOptions": {
+                "prompt": "Extract all flight options with airline name, price in BRL, departure time, arrival time, duration, and number of stops",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "flights": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "airline": {"type": "string"},
+                                    "price_brl": {"type": "number"},
+                                    "departure_time": {"type": "string"},
+                                    "arrival_time": {"type": "string"},
+                                    "duration": {"type": "string"},
+                                    "stops": {"type": "integer"},
+                                },
+                            },
+                        }
+                    },
+                },
+            },
+            "waitFor": 5000,
+            "location": {"country": "BR", "languages": ["pt-BR"]},
         }
 
-        response = http_requests.post(api_url, headers=headers, json=payload, timeout=60)
+        resp = http_requests.post(api_url, headers=headers, json=payload, timeout=45)
 
-        if response.status_code == 200:
-            data = response.json()
-            # Extrair texto da resposta
-            text_parts = []
-            for block in data.get("content", []):
-                if block.get("type") == "text":
-                    text_parts.append(block["text"])
-
-            full_text = " ".join(text_parts)
-
-            # Tentar extrair JSON da resposta
-            json_match = re.search(r'\{.*"flights".*\}', full_text, re.DOTALL)
-            if json_match:
-                try:
-                    flights_data = json.loads(json_match.group())
-                    flights = flights_data.get("flights", [])
-                    if flights:
-                        # Ordenar por preco
-                        flights.sort(key=lambda x: x.get("price", 9999))
-                        logger.info(f"Encontrados {len(flights)} voos reais!")
-                        return flights
-                except json.JSONDecodeError:
-                    pass
-
-            # Se nao conseguiu JSON, tentar extrair precos do texto
-            prices = re.findall(r'R\$\s*([\d.,]+)', full_text)
-            if prices:
-                clean_prices = []
-                for p in prices:
-                    try:
-                        val = int(p.replace(".", "").replace(",", ""))
-                        if 80 < val < 5000:
-                            clean_prices.append(val)
-                    except:
-                        pass
-                if clean_prices:
-                    return [{"airline": "Melhor oferta", "price": min(clean_prices), "stops": 0, "date": ida}]
-
-        logger.warning(f"API retornou status {response.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("success"):
+                json_data = data.get("data", {}).get("json", {})
+                flights = json_data.get("flights", [])
+                if flights:
+                    flights.sort(key=lambda x: x.get("price_brl", 9999))
+                    logger.info(f"Firecrawl encontrou {len(flights)} voos!")
+                    return flights
+        else:
+            logger.warning(f"Firecrawl status {resp.status_code}: {resp.text[:200]}")
 
     except Exception as e:
-        logger.error(f"Erro na busca real: {e}")
+        logger.error(f"Firecrawl erro: {e}")
 
-    # Fallback: scraping direto do Google Flights
-    return search_fallback()
+    return None
 
 
-def search_fallback():
-    """Fallback: scraping direto se a API falhar"""
-    logger.info("Usando fallback (scraping direto)...")
+def search_kayak_direct():
+    """Fallback: scraping direto do Kayak"""
     try:
+        ida = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        volta = (datetime.now() + timedelta(days=12)).strftime("%Y-%m-%d")
+
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
             "Accept-Language": "pt-BR,pt;q=0.9",
         }
-        url = "https://www.skyscanner.com.br/transport/flights/for/rec/"
-        resp = http_requests.get(url, headers=headers, timeout=12)
+        url = f"https://www.kayak.com.br/flights/FOR-REC/{ida}/{volta}?sort=price_a"
+        resp = http_requests.get(url, headers=headers, timeout=15)
+
         if resp.status_code == 200:
             prices = re.findall(r'R\$\s*([\d.,]+)', resp.text)
             valid = []
             for p in prices:
                 try:
-                    val = int(p.replace(".", "").replace(",", ""))
-                    if 80 < val < 5000:
-                        valid.append(val)
+                    v = int(p.replace(".", "").replace(",", ""))
+                    if 80 < v < 5000:
+                        valid.append(v)
                 except:
                     pass
+
+            airlines_found = []
+            for airline in ["GOL", "LATAM", "Azul", "Avianca", "VOEPASS"]:
+                if airline.lower() in resp.text.lower():
+                    airlines_found.append(airline)
+
             if valid:
-                return [{"airline": "Skyscanner", "price": min(valid), "stops": 0}]
+                best_price = min(valid)
+                airline = airlines_found[0] if airlines_found else "N/A"
+                return [{"airline": airline, "price_brl": best_price, "stops": 0, "departure_time": "", "arrival_time": "", "duration": ""}]
+
     except Exception as e:
-        logger.warning(f"Fallback erro: {e}")
+        logger.warning(f"Kayak direto erro: {e}")
+
+    return None
+
+
+def search_all():
+    """Busca em Firecrawl primeiro, fallback para Kayak direto"""
+    logger.info("=" * 40)
+    logger.info("BUSCANDO PASSAGENS REAIS...")
+
+    # Tenta Firecrawl (dados detalhados)
+    flights = search_firecrawl()
+    if flights:
+        return flights
+
+    # Fallback Kayak direto (menos detalhes)
+    logger.info("Tentando fallback Kayak direto...")
+    flights = search_kayak_direct()
+    if flights:
+        return flights
+
+    logger.warning("Nenhuma fonte retornou dados")
     return None
 
 
@@ -188,18 +197,16 @@ def search_fallback():
 # LINKS DE BUSCA
 # ============================================================
 
-SEARCH_LINKS = {
-    "Google Flights": "https://www.google.com/travel/flights?hl=pt-BR&curr=BRL",
-    "Skyscanner": "https://www.skyscanner.com.br/transport/flights/for/rec/",
-    "Kayak": "https://www.kayak.com.br/flights/FOR-REC",
-    "Decolar": "https://www.decolar.com/shop/flights/results/roundtrip/FOR/REC",
-}
-
 def build_links_text():
-    parts = []
-    for name, url in SEARCH_LINKS.items():
-        parts.append(f'<a href="{url}">{name}</a>')
-    return " | ".join(parts)
+    ida = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    volta = (datetime.now() + timedelta(days=12)).strftime("%Y-%m-%d")
+    links = {
+        "Google Flights": "https://www.google.com/travel/flights?hl=pt-BR&curr=BRL",
+        "Kayak": f"https://www.kayak.com.br/flights/FOR-REC/{ida}/{volta}?sort=price_a",
+        "Skyscanner": "https://www.skyscanner.com.br/transport/flights/for/rec/",
+        "Decolar": "https://www.decolar.com/shop/flights/results/roundtrip/FOR/REC",
+    }
+    return " | ".join(f'<a href="{u}">{n}</a>' for n, u in links.items())
 
 
 # ============================================================
@@ -210,10 +217,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = config.get("price_target", 190)
     msg = (
         "Bot de Monitoramento de Passagens\n\n"
-        f"Rota: Fortaleza - Recife\n"
+        f"Rota: Fortaleza - Recife (ida e volta)\n"
         f"Meta: R$ {target}\n"
         f"Rastreamento: 08:00, 14:00, 18:00\n"
-        f"Dados: REAIS (Google Flights/Skyscanner)\n\n"
+        f"Dados: REAIS (Kayak via Firecrawl)\n\n"
         "Comandos:\n"
         "/search - buscar agora\n"
         "/meta [valor] - alterar meta\n"
@@ -223,19 +230,20 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg)
 
+
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Buscando passagens REAIS... aguarde (pode levar ate 30s)")
-    flights = search_real_flights()
+    await update.message.reply_text("Buscando passagens REAIS... aguarde (ate 30s)")
+    flights = search_all()
     target = config.get("price_target", 190)
 
-    if flights and isinstance(flights, list) and len(flights) > 0:
+    if flights and len(flights) > 0:
         best = flights[0]
-        price = best.get("price", 0)
+        price = best.get("price_brl", 0)
         airline = best.get("airline", "N/A")
         stops = best.get("stops", 0)
-        date = best.get("date", "")
-        departure = best.get("departure", "")
-        duration = best.get("duration", "")
+        dep = best.get("departure_time", "")
+        arr = best.get("arrival_time", "")
+        dur = best.get("duration", "")
 
         config["last_price"] = price
         config["search_count"] = config.get("search_count", 0) + 1
@@ -245,35 +253,32 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if price <= target:
             msg = f"META BATIDA!\n\nR$ {price} - {airline}\n{stops_txt}"
-            if date:
-                msg += f"\nData: {date}"
-            if departure:
-                msg += f"\nPartida: {departure}"
-            if duration:
-                msg += f"\nDuracao: {duration}"
-            msg += f"\n\nBuscar em:\n{build_links_text()}"
         else:
             msg = f"Resultado da Busca\n\nMelhor preco: R$ {price}\nMeta: R$ {target}\nDiferenca: +R$ {price - target}\nCompanhia: {airline}\n{stops_txt}"
-            if date:
-                msg += f"\nData: {date}"
-            if departure:
-                msg += f"\nPartida: {departure}"
-            if duration:
-                msg += f"\nDuracao: {duration}"
-            msg += f"\n\nBuscar em:\n{build_links_text()}"
 
-        # Se tem mais voos, mostrar top 3
+        if dep:
+            msg += f"\nPartida: {dep}"
+        if arr:
+            msg += f"\nChegada: {arr}"
+        if dur:
+            msg += f"\nDuracao: {dur}"
+
+        # Top 5 voos
         if len(flights) > 1:
             msg += "\n\nOutras opcoes:"
-            for f in flights[1:3]:
-                fp = f.get("price", 0)
+            for f in flights[1:5]:
+                fp = f.get("price_brl", 0)
                 fa = f.get("airline", "N/A")
-                msg += f"\n  R$ {fp} - {fa}"
+                fs = "direto" if f.get("stops", 0) == 0 else f"{f.get('stops')}p"
+                fd = f.get("duration", "")
+                msg += f"\n  R$ {fp} - {fa} ({fs}) {fd}"
 
+        msg += f"\n\nBuscar em:\n{build_links_text()}"
     else:
-        msg = f"Nao encontrei precos automaticamente.\nTente buscar manualmente:\n\n{build_links_text()}"
+        msg = f"Nao encontrei precos automaticamente.\nTente manualmente:\n\n{build_links_text()}"
 
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 async def cmd_meta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -289,6 +294,7 @@ async def cmd_meta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except (ValueError, IndexError):
         await update.message.reply_text("Valor invalido. Use: /meta 250")
 
+
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     target = config.get("price_target", 190)
     last = config.get("last_price")
@@ -297,36 +303,63 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = f"Status do Bot\n\nBot online\nMeta: R$ {target}\nRota: FOR - REC\nDados: REAIS\nBuscas: {count}\nUltimo preco: {last_txt}"
     await update.message.reply_text(msg)
 
+
 async def cmd_links(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = f"Links de Busca Manual\n\n{build_links_text()}"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = "/start - iniciar\n/search - buscar agora (DADOS REAIS)\n/meta [valor] - alterar meta\n/status - ver status\n/links - ver links\n/help - ajuda"
     await update.message.reply_text(msg)
 
+
 async def fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Use /help para ver os comandos.")
 
+
+# ============================================================
+# BUSCA AGENDADA
+# ============================================================
+
 async def scheduled_search(ctx: ContextTypes.DEFAULT_TYPE):
     logger.info("Busca agendada iniciada")
-    flights = search_real_flights()
+    flights = search_all()
     target = config.get("price_target", 190)
-    if flights and isinstance(flights, list) and len(flights) > 0:
+
+    if flights and len(flights) > 0:
         best = flights[0]
-        price = best.get("price", 0)
+        price = best.get("price_brl", 0)
         airline = best.get("airline", "N/A")
+        stops = best.get("stops", 0)
+        dep = best.get("departure_time", "")
+        dur = best.get("duration", "")
+
         config["last_price"] = price
         config["search_count"] = config.get("search_count", 0) + 1
         save_config(config)
+
+        stops_txt = "direto" if stops == 0 else f"{stops}p"
+
         if price <= target:
-            msg = f"META BATIDA!\n\nR$ {price} - {airline}\nFortaleza - Recife\n\nBuscar em:\n{build_links_text()}"
+            msg = f"META BATIDA!\n\nR$ {price} - {airline} ({stops_txt})"
+            if dep:
+                msg += f"\nPartida: {dep}"
+            if dur:
+                msg += f"\nDuracao: {dur}"
+            msg += f"\n\nBuscar em:\n{build_links_text()}"
         else:
-            msg = f"Busca Automatica\n\nMelhor: R$ {price} ({airline})\nMeta: R$ {target}\nFalta: R$ {price - target}"
+            msg = f"Busca Automatica\n\nMelhor: R$ {price} - {airline} ({stops_txt})\nMeta: R$ {target}\nFalta: R$ {price - target}"
+
         try:
             await ctx.bot.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         except Exception as e:
             logger.error(f"Erro ao enviar: {e}")
+
+
+# ============================================================
+# STARLETTE
+# ============================================================
 
 async def health(request: Request):
     return PlainTextResponse("OK")
@@ -348,6 +381,10 @@ starlette_app = Starlette(
     ],
 )
 
+# ============================================================
+# APPLICATION
+# ============================================================
+
 application = Application.builder().token(TOKEN).updater(None).build()
 application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CommandHandler("search", cmd_search))
@@ -365,20 +402,19 @@ try:
 except Exception as e:
     logger.warning(f"Job queue erro: {e}")
 
+
 async def main():
-    logger.info("BOT DE PASSAGENS AEREAS - INICIANDO (DADOS REAIS)")
+    logger.info("BOT PASSAGENS AEREAS - DADOS REAIS")
     logger.info(f"Meta: R$ {config.get('price_target', 190)}")
-    logger.info(f"Chat ID: {ADMIN_CHAT_ID}")
-    logger.info(f"Porta: {PORT}")
+    logger.info(f"Firecrawl: {'SIM' if FIRECRAWL_API_KEY else 'NAO'}")
 
     await application.initialize()
     await application.start()
 
     if RENDER_EXTERNAL_URL:
-        webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
         try:
-            await application.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
-            logger.info(f"Webhook configurado: {webhook_url}")
+            await application.bot.set_webhook(url=f"{RENDER_EXTERNAL_URL}/webhook", allowed_updates=Update.ALL_TYPES)
+            logger.info(f"Webhook OK: {RENDER_EXTERNAL_URL}/webhook")
         except Exception as e:
             logger.error(f"Erro webhook: {e}")
 
