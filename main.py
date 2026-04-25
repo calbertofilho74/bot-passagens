@@ -201,7 +201,9 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     config["search_count"] = config.get("search_count", 0) + 1
     save_config(config)
 
-    header = "META BATIDA!" if p <= t else "Resultado da Busca"
+    kayak_url = get_kayak_url()
+
+    header = "META BATIDA! CORRE!" if p <= t else "Resultado da Busca"
     msg = f"{header}\n\nR$ {p} - {a}\n{st}"
     if dep and arr:
         msg += f" | {dep}-{arr}"
@@ -211,6 +213,9 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if p > t:
         msg += f" (falta R$ {p - t})"
     msg += f"\nDatas: {ida} a {volta}"
+
+    # Link direto de compra
+    msg += f'\n\n<a href="{kayak_url}">CLIQUE AQUI PARA COMPRAR NO KAYAK</a>'
 
     if len(flights) > 1:
         msg += "\n\nOutras opcoes:"
@@ -226,7 +231,7 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if fd:
                 msg += f" {fd}"
 
-    msg += f"\n\nComprar:\n{build_links()}"
+    msg += f"\n\nOutros sites:\n{build_links()}"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def cmd_meta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -279,7 +284,16 @@ async def scheduled_search(ctx: ContextTypes.DEFAULT_TYPE):
     save_config(config)
 
     if p <= t:
-        msg = f"META BATIDA!\n\nR$ {p} - {a} ({s})\n\nComprar:\n{build_links()}"
+        kayak = get_kayak_url()
+        dep = best.get("departure_time", "")
+        dur = best.get("duration", "")
+        msg = f"META BATIDA! CORRE!\n\nR$ {p} - {a} ({s})"
+        if dep:
+            msg += f" | {dep}"
+        if dur:
+            msg += f" | {dur}"
+        msg += f'\n\n<a href="{kayak}">CLIQUE AQUI PARA COMPRAR</a>'
+        msg += f"\n\nOutros sites:\n{build_links()}"
     else:
         msg = f"Busca Automatica\n\nR$ {p} - {a} ({s})\nMeta: R$ {t} | Falta: R$ {p - t}"
 
