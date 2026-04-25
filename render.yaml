@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bot-passagens
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
