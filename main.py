@@ -203,35 +203,36 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     kayak_url = get_kayak_url()
 
-    header = "META BATIDA! CORRE!" if p <= t else "Resultado da Busca"
-    msg = f"{header}\n\nR$ {p} - {a}\n{st}"
+    header = "🎉 META BATIDA! CORRE! 🎉" if p <= t else "✈️ Passagens Encontradas"
+    msg = f"{header}\n\n💰 <b>R$ {p}</b> - {a}\n{st}"
     if dep and arr:
         msg += f" | {dep}-{arr}"
     if dur:
         msg += f" | {dur}"
-    msg += f"\nMeta: R$ {t}"
+    msg += f"\n🎯 Meta: R$ {t}"
     if p > t:
         msg += f" (falta R$ {p - t})"
-    msg += f"\nDatas: {ida} a {volta}"
+    msg += f"\n📅 Datas: {ida} ➜ {volta}"
 
     # Link direto de compra
-    msg += f'\n\n<a href="{kayak_url}">CLIQUE AQUI PARA COMPRAR NO KAYAK</a>'
+    msg += f'\n\n🔗 <a href="{kayak_url}">COMPRAR NO KAYAK (clique aqui)</a>'
+    msg += f'\n\n💡 <i>Dica: No Kayak, use "Datas flexíveis" para ver preços em outras datas</i>'
 
     if len(flights) > 1:
-        msg += "\n\nOutras opcoes:"
+        msg += "\n\n📋 <b>Outras opções:</b>"
         for f in flights[1:5]:
             fp = int(f["price_brl"])
             fa = f.get("airline", "?")
             fs = "direto" if f.get("stops", 0) == 0 else f"{f.get('stops')}p"
             fd = f.get("duration", "")
             ft = f.get("departure_time", "")
-            msg += f"\nR$ {fp} - {fa} ({fs})"
+            msg += f"\n  • R$ {fp} - {fa} ({fs})"
             if ft:
-                msg += f" {ft}"
+                msg += f" às {ft}"
             if fd:
-                msg += f" {fd}"
+                msg += f" - {fd}"
 
-    msg += f"\n\nOutros sites:\n{build_links()}"
+    msg += f"\n\n🌐 <b>Outros sites de busca:</b>\n{build_links()}"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def cmd_meta(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
